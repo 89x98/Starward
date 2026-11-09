@@ -20,7 +20,8 @@
 
     <Grid>
 
-        <swi:ImageEx HorizontalAlignment="Center"
+        <swi:ImageEx x:Name="BackgroundImageEx"
+                     HorizontalAlignment="Center"
                      VerticalAlignment="Center"
                      PlaceholderSource="{x:Bind PlacehoderImageSource}"
                      PlaceholderStretch="UniformToFill"
@@ -28,7 +29,16 @@
                      Stretch="UniformToFill"
                      Style="{ThemeResource AppBackgroundImageExStyle}" />
 
-
+        <Grid x:Name="VideoLayer"
+              Visibility="Collapsed"
+              IsHitTestVisible="False">
+            <MediaPlayerElement x:Name="VideoPlayerElement"
+                                AreTransportControlsEnabled="False"
+                                IsFullWindow="False"
+                                Stretch="UniformToFill" />
+            <Image x:Name="VideoOverlayImage"
+                   Stretch="UniformToFill" />
+        </Grid>
 
         <Rectangle Width="400"
                    Height="400"

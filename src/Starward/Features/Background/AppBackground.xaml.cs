@@ -347,6 +347,13 @@ public sealed partial class AppBackground : UserControl
 
     #region Video
 
+    /// <summary>
+    /// 验证开关：默认使用 MediaPlayerElement 由系统合成器呈现视频。
+    /// 设置环境变量 STARWARD_NATIVE_VIDEO=0 后重启，可切回原来的 frame server
+    /// 逐帧绘制路径，用于同一个 exe 的 A/B 对比。
+    /// </summary>
+    private static readonly bool UseNativeVideoPresentation =
+        Environment.GetEnvironmentVariable("STARWARD_NATIVE_VIDEO") != "0";
 
 
     private MediaPlayer? _mediaPlayer;
@@ -389,19 +396,52 @@ public sealed partial class AppBackground : UserControl
             }
         }
         VP9Helper.RegisterVorbisDecoder();
+        _logger.LogInformation("Video background presenter: {mode}",
+                               UseNativeVideoPresentation ? "native MediaPlayerElement" : "frame server (legacy)");
         _mediaPlayer = new MediaPlayer
         {
             IsLoopingEnabled = true,
             Volume = videoBgVolume / 100.0,
             IsMuted = false,
-            IsVideoFrameServerEnabled = true,
+            // frame server 模式下 MediaPlayer 不呈现画面，由应用逐帧投递到 UI 线程绘制；
+            // 原生模式下交给 MediaPlayerElement，由系统合成器按时间戳对齐 vsync。
+            IsVideoFrameServerEnabled = !UseNativeVideoPresentation,
             Source = MediaSource.CreateFromUri(new Uri(file))
         };
         _mediaPlayer.CommandManager.IsEnabled = false;
         _mediaPlayer.SystemMediaTransportControls.IsEnabled = false;
-        _mediaPlayer.VideoFrameAvailable += MediaPlayer_VideoFrameAvailable;
         _mediaPlayer.MediaFailed += MediaPlayer_MediaFailed;
+        if (UseNativeVideoPresentation)
+        {
+            ShowVideoLayer();
+            VideoPlayerElement.SetMediaPlayer(_mediaPlayer);
+        }
+        else
+        {
+            _mediaPlayer.VideoFrameAvailable += MediaPlayer_VideoFrameAvailable;
+        }
         _mediaPlayer.Play();
+    }
+
+
+    private void ShowVideoLayer()
+    {
+        BackgroundImageEx.Visibility = Microsoft.UI.Xaml.Visibility.Collapsed;
+        VideoOverlayImage.Source = null;
+        VideoLayer.Visibility = Microsoft.UI.Xaml.Visibility.Visible;
+    }
+
+
+    private void HideVideoLayer()
+    {
+        try
+        {
+            VideoPlayerElement.SetMediaPlayer(null!);
+        }
+        catch { }
+        VideoOverlayImage.Source = null;
+        VideoLayer.Visibility = Microsoft.UI.Xaml.Visibility.Collapsed;
+        BackgroundImageEx.Visibility = Microsoft.UI.Xaml.Visibility.Visible;
     }
 
 
@@ -517,14 +557,36 @@ public sealed partial class AppBackground : UserControl
             {
                 return;
             }
-            _videoOverlayImage?.Dispose();
-            using var fs = File.OpenRead(filePath);
-            _videoOverlayImage = await CanvasBitmap.LoadAsync(CanvasDevice.GetSharedDevice(), fs.AsRandomAccessStream(), 96);
+            if (UseNativeVideoPresentation)
+            {
+                // 遮罩改为静态 XAML 图层，只解码一次，不再参与逐帧绘制
+                SetVideoOverlayFromUIThread(filePath);
+            }
+            else
+            {
+                _videoOverlayImage?.Dispose();
+                using var fs = File.OpenRead(filePath);
+                _videoOverlayImage = await CanvasBitmap.LoadAsync(CanvasDevice.GetSharedDevice(), fs.AsRandomAccessStream(), 96);
+            }
         }
         catch (OperationCanceledException) { }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Prepare video overlay image");
+        }
+    }
+
+
+    private void SetVideoOverlayFromUIThread(string filePath)
+    {
+        void Apply() => VideoOverlayImage.Source = new BitmapImage(new Uri(filePath));
+        if (DispatcherQueue is not null && !DispatcherQueue.HasThreadAccess)
+        {
+            DispatcherQueue.TryEnqueue(Apply);
+        }
+        else
+        {
+            Apply();
         }
     }
 
@@ -562,6 +624,10 @@ public sealed partial class AppBackground : UserControl
 
     private void DisposeVideoResource()
     {
+        if (UseNativeVideoPresentation)
+        {
+            HideVideoLayer();
+        }
         _mediaPlayer?.Dispose();
         _mediaPlayer = null;
         _videoSurface?.Dispose();
